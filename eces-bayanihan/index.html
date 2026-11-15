@@ -1889,6 +1889,8 @@ body.modal-open {
               published: false
             };
             db.resolutions.unshift(res);
+            // The secretary is told that a draft resolution is waiting for review.
+            db.accounts.filter(x => x.active && x.role === 'secretary').forEach(x => note(db, x.id, res.id + ' · A resolution for “' + res.title + '” was drafted. Review and publish it for signatures.'));
           } else {
             choice(v.decision, ['return', 'decline'], 'decision');
             p.reason = words(v.reason, 'Decision reason', 3, 350);
@@ -1949,6 +1951,8 @@ body.modal-open {
           r.state = 'signing';
           r.frozen = at();
           r.releasedBy = a.id;
+          // Every invited officer is told that the resolution is ready to sign.
+          r.signers.forEach(x => note(db, x.id, r.id + ' · The resolution for “' + r.title + '” is ready for your signature.'));
           changed('Resolution released for signatures');
           break;
         }
@@ -3138,14 +3142,30 @@ body.modal-open {
     db().proposals.filter(p=>p.status==='received').forEach(p=>list.push(['lightbulb','New proposal to screen · '+p.category,p.title,'dlg:screen',p.id]));
     return list;
   }
+  // Everything waiting for the signed-in officer, in the order the work flows: approve, review, vote, sign.
+  function todo() {
+    const role=me().role, list=lead()?approvals():[];
+    if(role==='secretary'){
+      db().resolutions.filter(r=>r.state==='draft').forEach(r=>list.push(['file','Resolution to review and publish · Version '+r.version,r.title,'dlg:freeze',r.id]));
+      db().resolutions.filter(r=>r.state==='signing'&&E.signaturesPending(r).length===0).forEach(r=>list.push(['check','Fully signed · Ready to file',r.title,'dlg:fileResolution',r.id]));
+      ownCases().filter(c=>c.kind==='inspection'&&c.assigned==='secretary'&&c.status!=='resolved').forEach(c=>list.push(['search','Records inspection request',c.subject,'tab:records','']));
+    }
+    if(role==='treasurer')db().batches.filter(d=>d.status==='for_treasurer').forEach(d=>list.push(['clipboard','Handover to approve · '+cash(d.cents),d.purpose,'dlg:check',d.id]));
+    if(onRole(['treasurer','collector']))db().batches.filter(d=>d.status==='returned'&&d.owner===S.me).forEach(d=>list.push(['alert','Returned for correction · '+cash(d.cents),d.purpose,'dlg:finance',d.id]));
+    if(onRole(E.boardRoles)){
+      db().ballots.filter(b=>b.status==='open'&&b.present.includes(S.me)&&!b.participated.includes(S.me)).forEach(b=>list.push(['users','Proposal to vote on · '+cash(b.budget),b.title,'dlg:vote',b.id]));
+      db().resolutions.filter(r=>r.state==='signing'&&r.signers?.some(x=>x.id===S.me)&&!r.signatures[S.me]).forEach(r=>list.push(['file','Resolution to sign · '+r.id,r.title,'dlg:sign',r.id]));
+    }
+    return list;
+  }
   const openCases=kind=>ownCases().filter(c=>c.assigned===me().role&&c.status!=='resolved'&&c.kind===kind).length;
   // Every role gets the same home layout: a banner, two shortcuts, then lists. Only the contents differ.
   function home() {
-    const leader=lead(), waiting=leader?approvals():[];
-    const [title,description,cta,action,shape,actionId='']=leader?waiting.length?[waiting.length+(waiting.length===1?' item needs':' items need')+' your approval','Funds, minutes, projects and proposals waiting for you are listed below.','Open the first one',waiting[0][3],'check',waiting[0][4]]:['All caught up','Nothing is waiting for your approval right now.','View proposals','tab:proposals','check']:spotlight();
+    const leader=lead(), officer=leader||onRole([...E.boardRoles,'collector']), waiting=officer?todo():[];
+    const [title,description,cta,action,shape,actionId='']=waiting.length?[waiting.length+(waiting.length===1?' item needs':' items need')+' your action','Approvals, votes and resolutions waiting for you are listed below.','Open the first one',waiting[0][3],'check',waiting[0][4]]:leader?['All caught up','Nothing is waiting for you right now.','View proposals','tab:proposals','check']:spotlight();
     const hero='<section class="mobile-feature"><div class="feature-copy"><h2>'+esc(titleCase(title))+'</h2><p>'+esc(description)+'</p><button class="feature-cta" data-do="'+esc(action)+'" data-id="'+esc(actionId)+'">'+esc(cta)+icon('arrow','sm')+'</button></div><span class="feature-art" aria-hidden="true"><i></i><b>'+icon(shape)+'</b></span></section>';
     const feedback='<div class="mobile-shortcuts">'+(leader?actionCard('Suggestions ('+openCases('suggestion')+')','tab:cases','message','suggestion')+actionCard('Private concerns ('+openCases('concern')+')','tab:cases','shield','concern'):actionCard('Make a suggestion','dlg:suggestion','message')+actionCard('Private concern','dlg:concern','shield'))+'</div>';
-    const approvalList=leader?section('Needs your approval',waiting.map(([shape,kicker,name,act,id])=>'<button class="notice-row" data-do="'+esc(act)+'" data-id="'+esc(id)+'"><span class="notice-symbol">'+icon(shape)+'</span><span><small>'+esc(kicker)+'</small><strong>'+esc(titleCase(name))+'</strong></span>'+icon('chevron','sm')+'</button>').join('')||empty('Nothing is waiting for your approval.')):'';
+    const approvalList=officer&&(leader||waiting.length)?section('Needs your action',waiting.map(([shape,kicker,name,act,id])=>'<button class="notice-row" data-do="'+esc(act)+'" data-id="'+esc(id)+'"><span class="notice-symbol">'+icon(shape)+'</span><span><small>'+esc(kicker)+'</small><strong>'+esc(titleCase(name))+'</strong></span>'+icon('chevron','sm')+'</button>').join('')||empty('Nothing is waiting for you.')):'';
     const latest=notices()[0];
     const announcement=latest?'<button class="notice-row" data-do="tab:updates"><span class="notice-symbol">'+icon('megaphone')+'</span><span><small>'+esc(date(latest.date))+'</small><strong>'+esc(titleCase(latest.title))+'</strong></span>'+icon('chevron','sm')+'</button>':empty('No announcements yet.');
     const projectsList=db().projects.slice(0,2).map(p=>'<button class="project-row" data-do="tab:projects"><span class="project-symbol">'+icon(p.icon||'sprout')+'</span><span><strong>'+esc(titleCase(p.title))+'</strong>'+badge(p.status)+'</span>'+icon('chevron','sm')+'</button>').join('');
@@ -3560,8 +3580,8 @@ body.modal-open {
     screen: 'Screening saved. A published proposal is now open for the officers’ vote.',
     closeBallot: 'Voting closed and the result recorded.',
     vote: 'Your vote was recorded once.',
-    headDecision: 'School-head decision recorded.',
-    freeze: 'Published. Every officer can now sign this version.',
+    headDecision: 'Decision recorded. An approved project now goes to the secretary, who reviews the resolution.',
+    freeze: 'Published. Every officer now sees it on their home page to sign.',
     sign: 'Your response was recorded on the resolution.',
     financeSubmit: 'Submitted for approval.',
     financeCheck: 'Handover review recorded.',
